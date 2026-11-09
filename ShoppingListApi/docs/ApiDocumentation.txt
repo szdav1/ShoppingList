@@ -1,0 +1,378 @@
+SHOPPING LIST API
+=================
+
+This document describes the HTTP API currently implemented by the application.
+Unless otherwise stated, request and response bodies use JSON.
+
+BASE URL
+--------
+Use the address and port where the application is running, for example:
+http://localhost:8080
+
+AUTHENTICATION
+--------------
+The registration and login endpoints issue an HS256 JWT valid for 24 hours.
+Send the token on protected requests in this header:
+
+Authorization: Bearer <accessToken>
+
+The token must belong to an active session. Logging out and resetting a
+password revoke active session tokens. Registration and login do not require
+authentication. Password reset uses the account recovery key instead of a JWT.
+
+COMMON RESPONSES
+----------------
+200 OK       Request succeeded.
+201 Created  Resource created.
+204 No Content  Request succeeded without a response body.
+400 Bad Request  Invalid request data or recovery credentials.
+401 Unauthorized  Missing, expired, invalid, or revoked JWT; or invalid login.
+403 Forbidden  Authenticated user does not have permission.
+404 Not Found  Requested resource does not exist or is unavailable.
+409 Conflict  Username already exists or request conflicts with stored data.
+
+Handled API errors have this JSON form:
+{"message":"Description of the error"}
+
+Validation errors are returned as HTTP 400. Authentication failures are
+returned as HTTP 401. Timestamps are ISO-8601 instants in UTC.
+
+
+USER ENDPOINTS
+==============
+
+1. Register
+-----------
+POST /api/users/register
+Authentication: Not required.
+Success: 201 Created
+
+Request:
+{
+  "username": "alex_1",
+  "password": "secure-pass"
+}
+
+Rules:
+- username is required, 3 to 30 characters, letters, digits, or underscore
+  only.
+- password is required and at least 8 characters.
+- Username must be unique.
+
+Response:
+{
+  "user": {
+    "id": 1,
+    "username": "alex_1",
+    "admin": false,
+    "createdAt": "2026-11-09T09:00:00Z"
+  },
+  "accessToken": "<JWT>",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-11-10T09:00:00Z",
+  "recoveryKey": "<one-time 16-character key>"
+}
+
+The recovery key is only returned at registration. Store it securely; the
+server stores only its SHA-256 hash.
+Errors: 400 invalid fields; 409 username already taken.
+
+2. Log in
+---------
+POST /api/users/login
+Authentication: Not required.
+Success: 200 OK
+
+Request:
+{
+  "username": "alex_1",
+  "password": "secure-pass"
+}
+
+Response:
+{
+  "user": {
+    "id": 1,
+    "username": "alex_1",
+    "admin": false,
+    "createdAt": "2026-11-09T09:00:00Z"
+  },
+  "accessToken": "<JWT>",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-11-10T09:00:00Z"
+}
+
+The recoveryKey field is omitted from login responses.
+Errors: 400 missing/blank fields; 401 invalid username or password.
+
+3. Get current user
+-------------------
+GET /api/users/me
+Authentication: Required.
+Success: 200 OK
+
+Response:
+{
+  "id": 1,
+  "username": "alex_1",
+  "admin": false,
+  "createdAt": "2026-11-09T09:00:00Z"
+}
+
+Errors: 401 missing, invalid, expired, or revoked JWT.
+
+4. Log out
+----------
+POST /api/users/logout
+Authentication: Required.
+Success: 204 No Content
+Body: None.
+
+Revokes the supplied JWT's session. The token can no longer be used.
+Errors: 401 missing, invalid, expired, or revoked JWT.
+
+5. Reset password
+-----------------
+POST /api/users/password/reset
+Authentication: Not required. A recovery key is required.
+Success: 204 No Content
+Body: None.
+
+Request:
+{
+  "username": "alex_1",
+  "recoveryKey": "<16-character key>",
+  "newPassword": "new-secure-pass"
+}
+
+Rules:
+- all fields are required.
+- recoveryKey must be exactly 16 characters.
+- newPassword must be at least 8 characters.
+- A successful reset revokes all active sessions for the account.
+Errors: 400 invalid fields or invalid username/recovery key.
+
+
+SHOPPING LIST ENDPOINTS
+=======================
+
+All endpoints below require authentication.
+List IDs and item IDs are integer identifiers.
+
+List access:
+- OWNER: may read, edit list metadata, manage shares, add items, and remove items.
+- EDITOR: may read the shared list and add or remove items.
+- VIEWER: may read the shared list only.
+- Only the owner may rename/archive/restore a list or manage shares.
+- Item changes require an active list. Archived lists cannot be edited.
+
+List response fields:
+{
+  "id": 1,
+  "title": "Groceries",
+  "ownerUsername": "alex_1",
+  "permission": "OWNER",
+  "deleted": false,
+  "createdAt": "2026-11-09T09:00:00Z",
+  "updatedAt": "2026-11-09T09:00:00Z",
+  "deletedAt": null
+}
+
+The permission is OWNER, EDITOR, or VIEWER for the current caller. deletedAt
+is null for an active list.
+
+6. Create a list
+----------------
+POST /api/lists
+Success: 201 Created
+
+Request:
+{
+  "title": "Groceries"
+}
+
+title is required, non-blank, and at most 255 characters.
+Response: List response; the caller is the owner.
+Errors: 400 invalid title; 401 authentication required.
+
+7. List active lists visible to the caller
+------------------------------------------
+GET /api/lists
+Success: 200 OK
+
+Response: JSON array of active lists owned by or shared with the caller.
+Each element is a List response. The array may be empty.
+Errors: 401 authentication required.
+
+8. Get an active list
+---------------------
+GET /api/lists/{listId}
+Success: 200 OK
+
+Response: List response.
+Errors: 401 authentication required; 403 caller is not the owner or a
+recipient; 404 list does not exist or is archived.
+
+9. Rename an active list
+------------------------
+PATCH /api/lists/{listId}
+Success: 200 OK
+
+Request:
+{
+  "title": "Weekly groceries"
+}
+
+title is required, non-blank, and at most 255 characters.
+Response: Updated List response.
+Errors: 400 invalid title; 401 authentication required; 403 caller is not the
+owner; 404 list does not exist or is archived.
+
+10. Archive a list
+------------------
+DELETE /api/lists/{listId}
+Success: 204 No Content
+Body: None.
+
+Soft-deletes an owned active list. The list is retained for up to 30 days and
+can be restored during that period. Expired archived lists are purged hourly.
+Errors: 401 authentication required; 403 caller is not the owner;
+404 list does not exist or is already archived.
+
+11. List archived lists
+-----------------------
+GET /api/lists/archive
+Success: 200 OK
+
+Response: JSON array of the caller's archived lists, newest deletion first.
+Each element is a List response. The array may be empty.
+Errors: 401 authentication required.
+
+12. Restore an archived list
+----------------------------
+POST /api/lists/{listId}/restore
+Success: 200 OK
+
+Restores an archived list owned by the caller if it has not expired.
+Response: Updated List response with deleted=false and deletedAt=null.
+Errors: 401 authentication required; 404 list is not an unexpired archived
+list owned by the caller.
+
+13. Add an item
+---------------
+POST /api/lists/{listId}/items
+Success: 201 Created
+
+Request:
+{
+  "name": "Milk",
+  "quantity": 1,
+  "unit": "liter"
+}
+
+Rules:
+- name is required, non-blank, and at most 255 characters.
+- quantity is required, greater than zero, and supports up to 8 integer digits
+  and 2 decimal places.
+- unit is required, non-blank, and at most 50 characters.
+- Leading and trailing whitespace is removed from name and unit.
+- New items start unchecked.
+
+Response:
+{
+  "id": 12,
+  "listId": 1,
+  "name": "Milk",
+  "quantity": 1.00,
+  "unit": "liter",
+  "checked": false,
+  "createdBy": "alex_1",
+  "createdAt": "2026-11-09T09:00:00Z",
+  "updatedAt": "2026-11-09T09:00:00Z"
+}
+
+Errors: 400 invalid item fields; 401 authentication required; 403 caller has
+no list access or is a viewer; 404 list does not exist or is archived.
+
+14. Remove an item
+------------------
+DELETE /api/lists/{listId}/items/{itemId}
+Success: 204 No Content
+Body: None.
+
+The item must belong to the specified active list. Owner and editor may remove
+items; viewers cannot.
+Errors: 401 authentication required; 403 caller has no list access or is a
+viewer; 404 list does not exist or is archived, or item does not belong to
+that list (including an unknown item ID).
+
+15. List shares
+---------------
+GET /api/lists/{listId}/shares
+Success: 200 OK
+
+Returns recipients and permissions for an active list. Owner only.
+Response:
+[
+  {
+    "username": "sam",
+    "permission": "editor",
+    "createdAt": "2026-11-09T09:00:00Z"
+  }
+]
+
+The array may be empty.
+Errors: 401 authentication required; 403 caller is not the owner;
+404 list does not exist or is archived.
+
+16. Share a list or change a recipient's permission
+---------------------------------------------------
+PUT /api/lists/{listId}/shares/{username}
+Success: 200 OK
+
+Request:
+{
+  "permission": "editor"
+}
+
+permission must be exactly "editor" or "viewer". If a share already exists,
+its permission is updated; otherwise a new share is created. The list owner
+cannot be added as a recipient.
+Response:
+{
+  "username": "sam",
+  "permission": "editor",
+  "createdAt": "2026-11-09T09:00:00Z"
+}
+
+Errors: 400 invalid permission or attempt to share with the owner;
+401 authentication required; 403 caller is not the owner; 404 list does not
+exist or is archived, or target username does not exist.
+
+17. Revoke a list share
+-----------------------
+DELETE /api/lists/{listId}/shares/{username}
+Success: 204 No Content
+Body: None.
+
+Only the owner may revoke a recipient's share.
+Errors: 401 authentication required; 403 caller is not the owner;
+404 list does not exist or is archived, or the share does not exist.
+
+
+API EXPLORATION
+===============
+Swagger UI: /api-docs
+OpenAPI JSON: /v3/api-docs
+
+In Swagger UI, register or log in, copy the accessToken, select Authorize, and
+enter the token value without the "Bearer " prefix.
+
+H2 console: /h2-console (database administration interface, not an API
+endpoint).
+
+
+CURRENT ITEM API SCOPE
+======================
+The implemented item operations are adding and removing items. Item listing,
+item check/uncheck, and item update endpoints are not currently exposed.
